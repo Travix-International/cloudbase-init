@@ -88,8 +88,7 @@ class BaseOpenStackService(base.BaseMetadataService):
         return list(set((key.strip() for key in public_keys)))
 
     def get_network_details(self):
-	"""
-	Example of network_data.json:
+        """Example of network_data.json:
 	{
 	    "links": [
 	        {
