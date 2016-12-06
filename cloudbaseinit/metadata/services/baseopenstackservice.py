@@ -40,6 +40,26 @@ class BaseOpenStackService(base.BaseMetadataService):
             posixpath.join('openstack', 'latest', 'user_data'))
         return self._get_cache_data(path)
 
+#    def _get_meta_data(self, version='latest'):
+#        path = posixpath.normpath(
+#            posixpath.join('openstack', version, 'meta_data.json'))
+#        data = self._get_cache_data(path, decode=True)
+#        if data:
+#            return json.loads(data)
+
+    def _get_generic_data(self, name, version='latest'):
+        path = posixpath.normpath(
+            posixpath.join('openstack', version, name))
+        data = self._get_cache_data(path, decode=True)
+        if data:
+            return json.loads(data)
+
+    def _get_meta_data(self):
+        return self._get_generic_data('meta_data.json')
+
+    def _get_network_data(self):
+        return self._get_generic_data('network_data.json')
+
     def _get_meta_data(self, version='latest'):
         path = posixpath.normpath(
             posixpath.join('openstack', version, 'meta_data.json'))
@@ -68,7 +88,92 @@ class BaseOpenStackService(base.BaseMetadataService):
         return list(set((key.strip() for key in public_keys)))
 
     def get_network_details(self):
+	"""
+	Example of network_data.json:
+	{
+	    "links": [
+	        {
+	            "ethernet_mac_address": "fa:16:3e:98:28:83",
+	            "id": "tap6c24009c-9c",
+	            "mtu": 1500,
+	            "type": "bridge",
+	            "vif_id": "6c24009c-9c51-4a01-bccb-0488fc3d539d"
+	        }
+	    ],
+	    "networks": [
+	        {
+	            "id": "network0",
+	            "ip_address": "172.16.16.6",
+	            "link": "tap6c24009c-9c",
+	            "netmask": "255.255.255.128",
+	            "network_id": "a7ffd6e4-3600-4d21-a785-4c1f89101b6f",
+	            "routes": [
+	                {
+	                    "gateway": "172.16.16.126",
+	                    "netmask": "0.0.0.0",
+	                    "network": "0.0.0.0"
+	                }
+	            ],
+	            "type": "ipv4"
+	        }
+	    ],
+	    "services": [
+	        {
+	            "address": "8.8.8.8",
+	            "type": "dns"
+	        }
+	    ]
+	}
+	"""
+        # Try retrieving and parsing the network data JSON.
+        try:
+            network_data = self._get_network_data()
+            LOG.warn("!!!! Network data: %s" % network_data)
+        except base.NotExistingMetadataException:
+            LOG.debug("Network data in JSON format not found; "
+                      "fallback to network_config.")
+        else:
+            if network_data:
+                # Collect DNS name servers.
+                dns_servers = []
+                for service in network_data["services"]:
+                    if service["type"] == "dns":
+                        dns_servers.append(service["address"])
+                # Extract basic details by links over networks.
+                links = {}
+                for link in network_data["links"]:
+                    links[link["id"]] = link
+                networks = {}
+                for network in network_data["networks"]:
+                    networks[network["link"]] = network
+
+                nics = []
+                for link_id, link in links.items():
+                    LOG.warn("!!!! link[type]: %s" % link["type"])
+                    if link["type"] in ("vif", "phy", "ovs", "bridge"):
+                        network = networks[link_id]
+                        suffix = "6" if network["type"] == "ipv6" else ""
+                        nic = dict.fromkeys(base.FIELDS)
+                        nic["dnsnameservers"] = dns_servers
+                        nic["name"] = network["id"]
+                        nic["mac"] = link["ethernet_mac_address"].upper()
+                        address = network["ip_address"]
+                        if suffix:
+                            pass
+                        else:
+                            nic["address"] = address
+                            nic["netmask"] = network["netmask"]
+                        for route in network["routes"]:
+                            if route["network"] == "0.0.0.0":
+                                #set default gateway
+                                nic["gateway"] = route["gateway"]
+                        nics.append(base.NetworkDetails(**nic))
+                LOG.warn("!!!! Nics: %s" % nics)
+                return nics
+
+        # Parse the Debian-like network configuration content.
         network_config = self._get_meta_data().get('network_config')
+        LOG.debug("Openstack network config raw: %s" % network_config)
         if not network_config:
             return None
         key = "content_path"
@@ -78,6 +183,7 @@ class BaseOpenStackService(base.BaseMetadataService):
         content_name = network_config[key].rsplit("/", 1)[-1]
         content = self.get_content(content_name)
         content = encoding.get_as_string(content)
+        LOG.debug("Openstack network config: %s" % content)
 
         return debiface.parse(content)
 
